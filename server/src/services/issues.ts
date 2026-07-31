@@ -1280,6 +1280,13 @@ async function getWorkspaceInheritanceIssue(
   return issue;
 }
 
+const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
+  "issue.read_marked",
+  "issue.read_unmarked",
+  "issue.inbox_archived",
+  "issue.inbox_unarchived",
+] as const;
+
 function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
@@ -1287,10 +1294,16 @@ function touchedByUserCondition(companyId: string, userId: string) {
       OR ${issues.assigneeUserId} = ${userId}
       OR EXISTS (
         SELECT 1
-        FROM ${issueReadStates}
-        WHERE ${issueReadStates.issueId} = ${issues.id}
-          AND ${issueReadStates.companyId} = ${companyId}
-          AND ${issueReadStates.userId} = ${userId}
+        FROM ${activityLog}
+        WHERE ${activityLog.entityType} = 'issue'
+          AND ${activityLog.entityId} = ${issues.id}::text
+          AND ${activityLog.companyId} = ${companyId}
+          AND ${activityLog.actorType} = 'user'
+          AND ${activityLog.actorId} = ${userId}
+          AND ${activityLog.action} NOT IN (${sql.join(
+            ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+            sql`, `,
+          )})
       )
       OR EXISTS (
         SELECT 1
@@ -1363,13 +1376,6 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
     )
   `;
 }
-
-const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
-  "issue.read_marked",
-  "issue.read_unmarked",
-  "issue.inbox_archived",
-  "issue.inbox_unarchived",
-] as const;
 
 function issueLatestCommentAtExpr(companyId: string) {
   return sql<Date | null>`

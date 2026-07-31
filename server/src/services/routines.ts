@@ -16,7 +16,6 @@ import {
   goals,
   heartbeatRuns,
   issueInboxArchives,
-  issueReadStates,
   issues,
   pluginManagedResources,
   plugins,
@@ -1583,22 +1582,17 @@ export function routineService(
       touchedAt: Date;
     },
   ) {
-    await executor
-      .insert(issueReadStates)
-      .values({
-        companyId: input.companyId,
-        issueId: input.issueId,
-        userId: input.userId,
-        lastReadAt: input.touchedAt,
-        updatedAt: input.touchedAt,
-      })
-      .onConflictDoUpdate({
-        target: [issueReadStates.companyId, issueReadStates.issueId, issueReadStates.userId],
-        set: {
-          lastReadAt: input.touchedAt,
-          updatedAt: input.touchedAt,
-        },
-      });
+    await executor.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: input.userId,
+      action: "issue.inbox_touched",
+      entityType: "issue",
+      entityId: input.issueId,
+      responsibleUserId: input.userId,
+      details: { source: "manual_routine_run" },
+      createdAt: input.touchedAt,
+    });
 
     await executor
       .delete(issueInboxArchives)
