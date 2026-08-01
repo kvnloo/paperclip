@@ -195,6 +195,15 @@ describe("paused escalation path warning", () => {
     ]);
   });
 
+  it("does not warn for agents with unknown statuses", () => {
+    const manager = agent({ id: "manager-1", name: "CTO", status: "paused", reportsTo: null });
+    const coder = agent({ id: "agent-1", name: "Coder", status: "mystery", reportsTo: "manager-1" });
+    const result = getAgentWorkEligibility({ agent: coder, agents: [coder, manager] });
+
+    expect(result.invokable).toBe(false);
+    expect(result.orgChainHealth.escalationWarning).toBeNull();
+  });
+
   it("does not warn on a fully active chain", () => {
     const manager = agent({ id: "manager-1", name: "CTO", status: "active", reportsTo: null });
     const coder = agent({ id: "agent-1", name: "Coder", status: "active", reportsTo: "manager-1" });

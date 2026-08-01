@@ -190,9 +190,11 @@ export function getAgentOrgChainHealth(input: {
   }
 
   const firstInvalidAncestor = invalidAncestors[0] ?? null;
-  // Only warn for agents that can themselves receive and run work: a paused
-  // or terminated agent's escalation path is moot until it is active again.
-  const agentCanWork = !NON_INVOKABLE_AGENT_STATUSES.has(input.agent.status);
+  // Only warn for agents that can themselves receive and run work: a paused,
+  // terminated, or unknown-status agent's escalation path is moot until it is
+  // invokable again. Allowlist on purpose — a denylist complement would treat
+  // unrecognized statuses as workable and warn misleadingly.
+  const agentCanWork = isAgentStatusInvokable(input.agent.status);
   const firstPausedAncestor = pausedAncestors[0] ?? null;
   const escalationWarning = agentCanWork && firstPausedAncestor
     ? `Escalations from ${input.agent.name} route to paused agent ${firstPausedAncestor.name}. ` +
