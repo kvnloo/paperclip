@@ -1297,6 +1297,7 @@ const ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS = [
   "issue.checked_out",
   "issue.checkout",
   "issue.child_created",
+  "issue.comment_cancelled",
   "issue.document_annotation_comment_added",
   "issue.document_annotation_remapped",
   "issue.document_annotation_thread_created",

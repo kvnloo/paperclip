@@ -392,7 +392,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       companyId,
       actorType: "user",
       actorId: userId,
-      action: "issue.updated",
+      action: "issue.comment_cancelled",
       entityType: "issue",
       entityId: issueId,
     });
