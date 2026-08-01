@@ -1254,6 +1254,83 @@ describeEmbeddedPostgres("attention service", () => {
       .toBe(new Date(now + 60 * 60_000).toISOString());
   });
 
+  it("keeps this-week deadlines in the current UTC week", async () => {
+    const { companyId, workerId } = await seedCompany("ATW");
+    const now = Date.parse("2026-08-02T12:00:00.000Z"); // Sunday in an ISO Monday-Sunday week.
+    const originIssueId = await insertIssue({
+      companyId,
+      identifier: "ATW-1",
+      title: "Decision origin",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+      updatedAt: new Date(now),
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: workerId,
+      status: "succeeded",
+      contextSnapshot: { issueId: originIssueId },
+    });
+
+    const thisWeekId = randomUUID();
+    const nextWeekId = randomUUID();
+    await db.insert(decisions).values([
+      { id: thisWeekId, title: "This week", expiresAt: new Date("2026-08-09T12:00:00.000Z") },
+      { id: nextWeekId, title: "Next week", expiresAt: new Date("2026-08-03T12:00:00.000Z") },
+    ].map((value) => ({
+      ...value,
+      companyId,
+      originAgentId: workerId,
+      originIssueId,
+      originRunId: runId,
+      body: value.title,
+      options: [],
+      status: "open" as const,
+      signedSpec: "test",
+      targetSnapshots: {},
+      createdAt: new Date(now),
+      updatedAt: new Date(now),
+    })));
+    await db.insert(decisionTriage).values([
+      {
+        companyId,
+        sourceKind: "decision",
+        sourceId: thisWeekId,
+        decideBy: "this_week",
+        setByType: "user",
+        setByUserId: "board-user",
+      },
+      {
+        companyId,
+        sourceKind: "decision",
+        sourceId: nextWeekId,
+        decideBy: "date",
+        decideByDate: "2026-08-03",
+        setByType: "user",
+        setByUserId: "board-user",
+      },
+    ]);
+
+    const feed = await attentionService(db, { now: () => now }).list(companyId, {
+      userId: "board-user",
+      sort: "decide",
+      limit: 20,
+    });
+    const decisionItems = feed.items.filter((item) => item.sourceKind === "decision");
+
+    expect(decisionItems.map((item) => item.subject.id)).toEqual([thisWeekId, nextWeekId]);
+    expect(decisionItems[0]).toMatchObject({
+      decideBy: "this_week",
+      expiresAt: "2026-08-09T12:00:00.000Z",
+    });
+    expect(decisionItems[1]).toMatchObject({
+      decideBy: "2026-08-03",
+      expiresAt: "2026-08-03T12:00:00.000Z",
+    });
+  });
+
   it("serves the route for board users and rejects agent callers", async () => {
     const { companyId } = await seedCompany("ATR");
 

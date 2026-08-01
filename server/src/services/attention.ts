@@ -139,6 +139,7 @@ type AttentionListOptions = AttentionFeedQuery & {
 
 type AttentionServiceOptions = {
   openDecisionLimit?: number;
+  now?: () => number;
 };
 
 function emptyCounts(): Record<AttentionSourceKind, number> {
@@ -415,7 +416,10 @@ function endOfUtcDay(now: number) {
 function endOfUtcWeek(now: number) {
   const start = startOfUtcDay(now);
   const weekday = new Date(start).getUTCDay();
-  return start + ((7 - weekday) % 7 + 1) * 24 * 60 * 60 * 1_000 - 1;
+  // Use an ISO-style Monday-Sunday week. Sunday (0) is already the last
+  // day of the current week; every other day advances only to that Sunday.
+  const daysUntilSunday = weekday === 0 ? 0 : 7 - weekday;
+  return start + (daysUntilSunday + 1) * 24 * 60 * 60 * 1_000 - 1;
 }
 
 function decideOrder(item: AttentionItem, now: number): [number, number] {
@@ -813,9 +817,9 @@ function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
   return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
 }
 
-export function attentionService(db: Db, options: AttentionServiceOptions = {}) {
+export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
   const openDecisionLimit = Math.min(
-    Math.max(Math.trunc(options.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
+    Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
     OPEN_DECISION_MAX_LIMIT,
   );
   return {
@@ -823,7 +827,7 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
       const prefix = await companyPrefix(db, companyId);
       const dismissals = await dismissalByKey(db, companyId, options.userId);
       const includeDismissed = options.includeDismissed === true;
-      const now = Date.now();
+      const now = serviceOptions.now?.() ?? Date.now();
       const collected: AttentionItem[] = [];
 
       const add = (item: AttentionItem) => {
@@ -1014,7 +1018,7 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
           exitRule: "Decision is decided, expired, or cancelled.",
           dedupKey: `decision:${decision.id}`,
           severity: "medium",
-          expiresAt: toIso(decision.expiresAt),
+          expiresAt: decision.expiresAt ? toIso(decision.expiresAt) : null,
           ruleKey: decision.ruleKey,
           activityAt: toIso(decision.updatedAt),
           createdAt: toIso(decision.createdAt),
