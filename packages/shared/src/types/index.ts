@@ -19,11 +19,15 @@ export type {
   AttentionItem,
   AttentionItemDetail,
   AttentionItemDismissal,
+  AttentionFeedQuery,
   AttentionProjectRef,
+  AttentionQueueRef,
   AttentionSeverity,
+  AttentionSortMode,
   AttentionSourceKind,
   AttentionSubject,
   AttentionSubjectKind,
+  AttentionTriageAttribution,
   AttentionWorkspaceRef,
 } from "./attention.js";
 export { ATTENTION_SOURCE_KINDS } from "./attention.js";

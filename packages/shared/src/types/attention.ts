@@ -59,6 +59,33 @@ export interface AttentionWorkspaceRef {
   name: string;
 }
 
+export interface AttentionQueueRef {
+  key: string;
+  title: string;
+}
+
+export interface AttentionTriageAttribution {
+  type: "agent" | "user";
+  agentId: string | null;
+  agentName: string | null;
+  userId: string | null;
+  runId: string | null;
+  responsibleUserId: string | null;
+  updatedAt: string;
+}
+
+export type AttentionSortMode = "activity" | "decide";
+
+export interface AttentionFeedQuery {
+  includeDismissed?: boolean;
+  activitySince?: string;
+  activityUntil?: string;
+  queue?: string;
+  sort?: AttentionSortMode;
+  cursor?: string;
+  limit?: number;
+}
+
 export interface AttentionDetailImage {
   assetId: string;
   alt?: string | null;
@@ -170,6 +197,13 @@ export interface AttentionItem {
   relatedIssue: AttentionSubject | null;
   project: AttentionProjectRef | null;
   workspace: AttentionWorkspaceRef | null;
+  expiresAt: string | null;
+  ruleKey: string | null;
+  originAgentName: string | null;
+  queues: AttentionQueueRef[];
+  decideBy: string | null;
+  decideByAttribution: AttentionTriageAttribution | null;
+  snoozedUntil: string | null;
   detail: AttentionItemDetail | null;
   trainingExampleId: string | null;
 }
@@ -178,6 +212,8 @@ export interface AttentionFeed {
   companyId: string;
   generatedAt: string;
   totalCount: number;
+  decideNowCount: number;
+  nextCursor: string | null;
   countsBySourceKind: Record<AttentionSourceKind, number>;
   items: AttentionItem[];
 }
