@@ -338,7 +338,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     return companyId;
   }
 
-  it("does not treat reading an issue as touching it, but includes real user mutations", async () => {
+  it("does not treat passive issue activity as touching it, but includes real user mutations", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issueId = randomUUID();
     const userId = "board-user";
@@ -351,14 +351,40 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       priority: "medium",
     });
     await svc.markRead(companyId, issueId, userId);
-    await db.insert(activityLog).values({
-      companyId,
-      actorType: "user",
-      actorId: userId,
-      action: "issue.read_marked",
-      entityType: "issue",
-      entityId: issueId,
-    });
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.read_marked",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.file_resource_content_read",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.file_resource_download_denied",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.tree_control_previewed",
+        entityType: "issue",
+        entityId: issueId,
+      },
+    ]);
 
     await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([]);
 

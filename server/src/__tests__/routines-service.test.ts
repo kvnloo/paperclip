@@ -427,7 +427,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(agentId).not.toBe(otherAgentId);
   });
 
-  it("fires for a human comment and ignores pure-read activity", async () => {
+  it("fires for a human comment and ignores inbox bookkeeping activity", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const windowStart = new Date(Date.now() - 60_000);
     const now = new Date();
@@ -452,6 +452,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         entityType: "issue",
         entityId: issueId,
         createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 3_000),
       },
     ]);
 
@@ -479,6 +488,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         entityType: "issue",
         entityId: issueId,
         createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 3_000),
       },
     ]);
 

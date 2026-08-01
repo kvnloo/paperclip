@@ -87,6 +87,7 @@ const ACTIVITY_GATE_IGNORED_ACTIONS = [
   "issue.read_unmarked",
   "issue.inbox_archived",
   "issue.inbox_unarchived",
+  "issue.inbox_touched",
 ];
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
