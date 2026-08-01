@@ -804,11 +804,29 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
     if (input.allowBoardOverride && attemptedStageAdvance) {
-      if (
-        (requestedStatus !== undefined && requestedStatus !== "in_review") ||
-        (requestedAssigneePatchProvided && !principalsEqual(explicitAssignee, currentParticipant))
-      ) {
+      if (requestedStatus !== undefined && requestedStatus !== "in_review") {
         patch.executionState = null;
+        return { patch };
+      }
+      // Assignee-only override: the issue stays in_review, so clearing the
+      // execution state would strand it with no participant or return
+      // assignment. Re-pend the stage with the board's chosen participant, or
+      // dissolve the review when the board unassigns.
+      if (explicitAssignee) {
+        buildPendingStagePatch({
+          patch,
+          previous: existingState,
+          policy: input.policy,
+          stage: activeStage,
+          participant: explicitAssignee,
+          returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+          reviewRequest: effectiveReviewRequest,
+        });
+        return { patch };
+      }
+      patch.executionState = null;
+      if (input.issue.status === "in_review") {
+        patch.status = "in_progress";
       }
       return { patch };
     }
