@@ -2451,6 +2451,100 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-ancestor-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedChain() {
+    const companyId = randomUUID();
+    const delegatorId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Chain Co",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: delegatorId,
+      companyId,
+      name: "Delegator",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const rootId = randomUUID();
+    const midId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: rootId,
+        companyId,
+        title: "Root task",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "CHAIN-1",
+      },
+      {
+        id: midId,
+        companyId,
+        title: "Delegated review",
+        status: "in_progress",
+        priority: "medium",
+        parentId: rootId,
+        createdByAgentId: delegatorId,
+        issueNumber: 2,
+        identifier: "CHAIN-2",
+      },
+    ]);
+    return { companyId, delegatorId, rootId, midId };
+  }
+
+  it("finds an open ancestor created by the agent, at any depth", async () => {
+    const { delegatorId, midId } = await seedChain();
+
+    const direct = await svc.findOpenAncestorCreatedByAgent(midId, delegatorId);
+    expect(direct?.id).toBe(midId);
+
+    const other = await svc.findOpenAncestorCreatedByAgent(midId, randomUUID());
+    expect(other).toBeNull();
+  });
+
+  it("ignores closed ancestors created by the agent", async () => {
+    const { delegatorId, midId } = await seedChain();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, midId));
+
+    expect(await svc.findOpenAncestorCreatedByAgent(midId, delegatorId)).toBeNull();
+  });
+
+  it("stops at the depth bound", async () => {
+    const { delegatorId, midId } = await seedChain();
+
+    // With maxDepth 0 nothing is inspected.
+    expect(await svc.findOpenAncestorCreatedByAgent(midId, delegatorId, { maxDepth: 0 })).toBeNull();
+  });
+});
+
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;

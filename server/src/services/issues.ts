@@ -5340,6 +5340,51 @@ export function issueService(db: Db) {
       return activeInboxArchiveFields(archive, lastActivityAt);
     },
 
+    /**
+     * Walk the parent chain from `parentIssueId` (inclusive) looking for a
+     * still-open ancestor created by `agentId`. Used to refuse agent
+     * delegation cycles: an agent assigning a new child to the agent that
+     * created an open ancestor is handing the same work back to its own
+     * delegator (A→B→A hot-potato). Bounded to `maxDepth` ancestors.
+     */
+    findOpenAncestorCreatedByAgent: async (
+      parentIssueId: string,
+      agentId: string,
+      opts?: { maxDepth?: number },
+    ) => {
+      const maxDepth = opts?.maxDepth ?? 10;
+      let cursor: string | null = parentIssueId;
+      for (let depth = 0; cursor && depth < maxDepth; depth += 1) {
+        const ancestor: {
+          id: string;
+          identifier: string | null;
+          parentId: string | null;
+          createdByAgentId: string | null;
+          status: string;
+        } | null = await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            parentId: issues.parentId,
+            createdByAgentId: issues.createdByAgentId,
+            status: issues.status,
+          })
+          .from(issues)
+          .where(eq(issues.id, cursor))
+          .then((rows) => rows[0] ?? null);
+        if (!ancestor) return null;
+        if (
+          ancestor.createdByAgentId === agentId &&
+          ancestor.status !== "done" &&
+          ancestor.status !== "cancelled"
+        ) {
+          return ancestor;
+        }
+        cursor = ancestor.parentId;
+      }
+      return null;
+    },
+
     getById: async (raw: string) => {
       const id = raw.trim();
       const identifier = normalizeIssueReferenceIdentifier(id);
