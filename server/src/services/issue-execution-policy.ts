@@ -47,6 +47,7 @@ type TransitionInput = {
   requestedStatus?: string;
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
+  allowBoardOverride?: boolean;
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
@@ -761,6 +762,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         };
       }
 
+      if (
+        input.allowBoardOverride &&
+        requestedStatus &&
+        requestedStatus !== "in_review" &&
+        requestedStatus !== "in_progress"
+      ) {
+        patch.executionState = null;
+        return { patch };
+      }
+
       if (requestedStatus && requestedStatus !== "in_review") {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
@@ -791,6 +802,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       input.issue.status !== "in_review" ||
       !principalsEqual(currentAssignee, currentParticipant) ||
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
+
+    if (input.allowBoardOverride && attemptedStageAdvance) {
+      if (
+        (requestedStatus !== undefined && requestedStatus !== "in_review") ||
+        (requestedAssigneePatchProvided && !principalsEqual(explicitAssignee, currentParticipant))
+      ) {
+        patch.executionState = null;
+      }
+      return { patch };
+    }
 
     if (attemptedStageAdvance && !stageStateDrifted) {
       throw unprocessable("Only the active reviewer or approver can advance the current execution stage");

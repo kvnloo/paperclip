@@ -569,6 +569,70 @@ describe("issue execution policy transitions", () => {
       ).toThrow("Only the active reviewer or approver can advance");
     });
 
+    it("board override can cancel an active review without recording an approval decision", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "cancelled",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        allowBoardOverride: true,
+        commentBody: "Cancelling this task",
+      });
+
+      expect(result.patch).toEqual({ executionState: null });
+      expect(result.decision).toBeUndefined();
+      expect(result.workflowControlledAssignment).toBeUndefined();
+    });
+
+    it("board override can cancel a drifted pending review without rebuilding the pending stage", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "blocked",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "cancelled",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        allowBoardOverride: true,
+        commentBody: "Cancelling this drifted task",
+      });
+
+      expect(result.patch).toEqual({ executionState: null });
+      expect(result.decision).toBeUndefined();
+      expect(result.workflowControlledAssignment).toBeUndefined();
+    });
+
     it("non-participant can still post non-advancing updates", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
