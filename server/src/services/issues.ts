@@ -5345,16 +5345,22 @@ export function issueService(db: Db) {
      * still-open ancestor created by `agentId`. Used to refuse agent
      * delegation cycles: an agent assigning a new child to the agent that
      * created an open ancestor is handing the same work back to its own
-     * delegator (A→B→A hot-potato). Bounded to `maxDepth` ancestors.
+     * delegator (A→B→A hot-potato). Bounded to `maxDepth` ancestors — deep
+     * enough for any real tree while keeping the walk finite even if the
+     * parent graph is corrupted into a loop (the visited set catches loops
+     * before the bound does).
      */
     findOpenAncestorCreatedByAgent: async (
       parentIssueId: string,
       agentId: string,
       opts?: { maxDepth?: number },
     ) => {
-      const maxDepth = opts?.maxDepth ?? 10;
+      const maxDepth = opts?.maxDepth ?? 50;
+      const visited = new Set<string>();
       let cursor: string | null = parentIssueId;
       for (let depth = 0; cursor && depth < maxDepth; depth += 1) {
+        if (visited.has(cursor)) return null;
+        visited.add(cursor);
         const ancestor: {
           id: string;
           identifier: string | null;
