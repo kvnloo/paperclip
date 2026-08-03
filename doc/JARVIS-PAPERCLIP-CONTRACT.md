@@ -35,10 +35,12 @@ Paperclip performs assignment, atomic checkout, budget/approval checks, and work
     "issueId": "...",
     "issueIdentifier": "ZER-2",
     "assignmentId": "...",
+    "assignedAgentId": "...",
     "runId": "...",
     "workspaceId": "...",
     "workspaceCwd": "/workspace/zer0/oss/paperclip",
-    "approvalState": "...",
+    "approvalState": "approved|not_required",
+    "budgetDisposition": "approved|not_required",
     "budgetRemainingCents": 0
   }
 }
@@ -67,7 +69,7 @@ Required enforcement:
 1. Validate the response schema before spawning the harness.
 2. Reject Jarvis fields that claim Paperclip authority (`status`, assignment, approvals, budgets, run, issue, project, workspace, evidence disposition).
 3. Every returned write path must be absolute and, after realpath/symlink resolution, equal to or beneath Paperclip's selected workspace. Retrieval-only external paths must be labeled separately and mounted/read-authorized by Paperclip policy.
-4. Cap packet size and omit or summarize low-value context rather than truncating authoritative Paperclip instructions.
+4. Cap the serialized packet at 16,000 UTF-8 bytes and omit or summarize low-value context rather than truncating authoritative Paperclip instructions.
 5. `required=true` fails closed **before spawn** on timeout, malformed context, or policy violation. Optional mode emits an explicit degradation marker.
 
 ## Post-run contract
@@ -124,24 +126,26 @@ The active `hermes/jarvis-identity-bridge` candidate establishes useful basics: 
 4. **Provenance persistence:** `/v1/expand` accepts `meta`, but its recorded expand activity currently retains only prompt/focus/cache/latency fields; Paperclip issue/run references need durable projection.
 5. **Redaction:** the candidate forwards up to 4,000 characters of parsed harness response to `/learn` without a contract-level redaction/evidence-reference gate.
 6. **Authority-field rejection:** shape validation checks required context fields but does not reject root or nested Jarvis-supplied lifecycle/workspace/budget/approval fields, nor a mismatched `product_id`.
-7. **Scoped integration auth:** a gateway bearer token is useful transport auth, but it does not replace the separate project-scoped Paperclip task-bridge credential for actionable intake. The task-bridge operation set must be an intake-only allowlist; claimed credential scopes cannot grant governance powers.
-8. **Real contract gate:** mocked adapter tests pass, but a dual-service test must prove Paperclip checkout → Jarvis expand → harness spawn → Paperclip evidence/disposition → idempotent Jarvis learn, including timeout and crash/replay.
+7. **Outcome fidelity:** preserve Paperclip's `success|failure|cancelled|timed_out` disposition instead of collapsing every timeout or nonzero exit into `failure`.
+8. **Scoped integration auth:** a gateway bearer token is useful transport auth, but it does not replace the separate company/project/harness-scoped Paperclip task-bridge credential for actionable intake. The task-bridge operation set must be an intake-only allowlist; claimed credential scopes cannot grant governance powers.
+9. **Real contract gate:** mocked adapter tests pass, but a dual-service test must prove Paperclip governance/checkout → Jarvis expand → harness spawn → Paperclip evidence/disposition → idempotent Jarvis learn, including timeout and crash/replay.
 
 ## Executable reference tests
 
 Run the dependency-free contract suite from the Paperclip repository root:
 
 ```bash
-node --test scripts/jarvis-paperclip-contract.test.mjs
+pnpm exec node --test scripts/jarvis-paperclip-contract.test.mjs
 ```
 
 The suite covers:
 
-- canonical Paperclip references and product mapping on expand;
-- rejection of root/nested authority claims, product mismatch, lexical workspace escapes, and symlink escapes;
-- enforced Paperclip-finalization-before-learn ordering;
-- bounded, explicitly redacted, provenance-linked learn events with a closed outcome enum;
-- project-scoped task-bridge authorization with hard denials for governed actions;
+- canonical Paperclip goals, assignment/agent identity, cleared approval/budget disposition, and product mapping on expand;
+- rejection of root/nested authority claims, product mismatch, oversized packets, lexical workspace escapes, and symlink escapes;
+- enforced Paperclip-governance-before-checkout and finalization-before-learn ordering;
+- bounded, explicitly redacted, secret-scanned, provenance-linked learn events with a closed outcome enum;
+- crash-after-persist learn replay deduplication and idempotency-collision rejection;
+- company/project/harness-scoped task-bridge authorization with an intake-only operation allowlist;
 - company-isolated idempotent intake;
 - crash-after-persist replay without duplicate issue authority.
 
