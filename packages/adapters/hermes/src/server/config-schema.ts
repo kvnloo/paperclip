@@ -98,6 +98,26 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Optional API base override. Defaults to PAPERCLIP_API_URL.",
       },
       {
+        key: "jarvisGatewayUrl",
+        label: "Jarvis identity gateway URL",
+        type: "text",
+        hint: "Optional local Jarvis gateway base URL. Defaults to JARVIS_GATEWAY_URL when set.",
+      },
+      {
+        key: "jarvisRequired",
+        label: "Require Jarvis identity context",
+        type: "toggle",
+        default: false,
+        hint: "Fail closed before spawning Hermes when Jarvis expansion is unavailable or malformed.",
+      },
+      {
+        key: "jarvisTimeoutMs",
+        label: "Jarvis timeout milliseconds",
+        type: "number",
+        default: 1500,
+        hint: "Bounded latency budget for Jarvis expansion and outcome recording.",
+      },
+      {
         key: "promptTemplate",
         label: "Prompt template",
         type: "textarea",

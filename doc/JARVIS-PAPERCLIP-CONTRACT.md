@@ -118,49 +118,40 @@ Credentials are one per company/project/harness boundary. An intake credential m
 
 ## Candidate adapter review: fix-first findings
 
-The active `hermes/jarvis-identity-bridge` candidate establishes useful basics: optional/required pre-run behavior, environment-only Jarvis token handling, schema checks, run-linked expand/learn calls, and focused mocked tests. It is **not ready to merge** until these contract gaps are closed:
+The active `hermes/jarvis-identity-bridge` candidate establishes useful basics: optional/required pre-run behavior, environment-only Jarvis token handling, schema checks, run-linked expand/learn calls, and focused mocked tests. Close these contract gaps before merge:
 
-1. **Post-run ordering:** the adapter calls `/learn` before returning its execution result, so Paperclip cannot yet have persisted evidence and final disposition. Emit learning from a Paperclip-owned post-finalization outbox/event hook instead.
-2. **Workspace confinement:** current Jarvis packet validation accepts arbitrary absolute `paths`; a packet can redirect work outside Paperclip's selected workspace or through a symlink escape.
-3. **Replay safety:** current `/v1/learn` always appends an activity row and has no idempotency key/deduplication path.
-4. **Provenance persistence:** `/v1/expand` accepts `meta`, but its recorded expand activity currently retains only prompt/focus/cache/latency fields; Paperclip issue/run references need durable projection.
-5. **Redaction:** the candidate forwards up to 4,000 characters of parsed harness response to `/learn` without a contract-level redaction/evidence-reference gate.
-6. **Authority-field rejection:** shape validation checks required context fields but does not reject root or nested Jarvis-supplied lifecycle/workspace/budget/approval fields, nor a mismatched `product_id`.
-7. **Outcome fidelity:** preserve Paperclip's `success|failure|cancelled|timed_out` disposition instead of collapsing every timeout or nonzero exit into `failure`.
-8. **Scoped integration auth:** a gateway bearer token is useful transport auth, but it does not replace the separate company/project/harness-scoped Paperclip task-bridge credential for actionable intake. The task-bridge operation set must be an intake-only allowlist; claimed credential scopes cannot grant governance powers.
-9. **Real contract gate:** mocked adapter tests pass, but a dual-service test must prove Paperclip governance/checkout → Jarvis expand → harness spawn → Paperclip evidence/disposition → idempotent Jarvis learn, including timeout and crash/replay.
+1. **Post-run ordering:** ~~adapter called `/learn` before returning~~ → Paperclip-owned post-finalization outbox (`resultJson.jarvis_learn_outbox` + heartbeat drain via `deliverPendingJarvisLearn`).
+2. **Workspace confinement:** ~~lexical-only paths~~ → realpath/symlink-aware rejection before spawn.
+3. **Replay safety:** ~~always append learn~~ → Jarvis `/v1/learn` idempotency ledger (`learn_idempotency`) with collision rejection.
+4. **Provenance persistence:** expand activity payload now projects `meta.paperclip` / `jarvis_trace_id` / `packet_id`.
+5. **Redaction:** adapter enqueues bounded redacted summaries + evidence refs; raw harness dumps are not learned.
+6. **Authority-field rejection:** recursive rejection of root/nested Paperclip authority fields + product mismatch.
+7. **Outcome fidelity:** preserve `success|failure|cancelled|timed_out`.
+8. **Scoped integration auth:** task-bridge remains company/project/harness-scoped intake-only (oracle + dual-service gate).
+9. **Real contract gate:** `scripts/jarvis-paperclip-dual-service.test.mjs` covers checkout→expand→harness→Paperclip evidence→learn including timeout + crash/replay.
 
 ## Executable reference tests
 
-Run the dependency-free contract suite from the Paperclip repository root:
+Run from the Paperclip repository root:
 
 ```bash
-pnpm exec node --test scripts/jarvis-paperclip-contract.test.mjs
+pnpm exec node --test scripts/jarvis-paperclip-contract.test.mjs scripts/jarvis-paperclip-dual-service.test.mjs
+pnpm --filter @paperclipai/hermes-paperclip-adapter exec vitest run src/server/jarvis.test.ts src/server/execute.onspawn.test.ts
+pnpm --filter @paperclipai/server exec vitest run src/services/jarvis-learn-outbox.test.ts
 ```
 
-The suite covers:
-
-- canonical Paperclip goals, assignment/agent identity, cleared approval/budget disposition, and product mapping on expand;
-- rejection of root/nested authority claims, product mismatch, oversized packets, lexical workspace escapes, and symlink escapes;
-- enforced Paperclip-governance-before-checkout and finalization-before-learn ordering;
-- bounded, explicitly redacted, secret-scanned, provenance-linked learn events with a closed outcome enum;
-- crash-after-persist learn replay deduplication and idempotency-collision rejection;
-- company/project/harness-scoped task-bridge authorization with an intake-only operation allowlist;
-- company-isolated idempotent intake;
-- crash-after-persist replay without duplicate issue authority.
-
-These tests are an executable protocol oracle. Adapter and Jarvis gateway integration tests should reuse the same cases against real HTTP handlers rather than weakening the oracle to match an implementation.
+The oracle suite covers canonical expand authority, workspace confinement, finalization-before-learn ordering, redacted learn events, crash/replay learn dedupe, and intake-only task-bridge auth. Adapter/gateway tests must stay aligned with that oracle.
 
 ## Merge gate
 
 Do not re-enable autonomous delivery until all are green:
 
-- [ ] Paperclip checkout and budget/approval gate precede expand.
-- [ ] Required/optional Jarvis failure modes are explicit.
-- [ ] Workspace confinement and authority-field rejection are enforced.
-- [ ] Task intake deduplicates on origin fingerprint with scoped auth.
-- [ ] Learn deduplicates on idempotency key and stores Paperclip provenance.
-- [ ] Outcome payload is redacted and evidence is referenced, not copied.
-- [ ] Crash between remote persistence and client acknowledgement is replay-safe.
-- [ ] No duplicate Paperclip/Jarvis issue authority exists.
-- [ ] Real two-service contract test passes; mocked unit tests remain green.
+- [x] Paperclip checkout and budget/approval gate precede expand.
+- [x] Required/optional Jarvis failure modes are explicit.
+- [x] Workspace confinement and authority-field rejection are enforced.
+- [x] Task intake deduplicates on origin fingerprint with scoped auth.
+- [x] Learn deduplicates on idempotency key and stores Paperclip provenance.
+- [x] Outcome payload is redacted and evidence is referenced, not copied.
+- [x] Crash between remote persistence and client acknowledgement is replay-safe.
+- [x] No duplicate Paperclip/Jarvis issue authority exists.
+- [x] Real two-service contract test passes; mocked unit tests remain green.

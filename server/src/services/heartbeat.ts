@@ -100,6 +100,7 @@ import {
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
+import { deliverPendingJarvisLearn } from "./jarvis-learn-outbox.js";
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
@@ -578,6 +579,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
+const activeRunAbortControllers = new Map<string, AbortController>();
 // Background heartbeat executions are dispatched fire-and-forget (see
 // startNextQueuedRunForAgent), so the promise that resolves once a run's DB
 // writes are fully flushed is otherwise unobservable. Track those promises here
@@ -12852,6 +12854,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     activeRunExecutions.add(run.id);
+    const runAbortController = new AbortController();
+    activeRunAbortControllers.set(run.id, runAbortController);
     let runScratch: HeartbeatRunScratch | null = null;
 
     try {
@@ -14705,6 +14709,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
             : undefined,
           runtimeMcp,
+          abortSignal: runAbortController.signal,
           onLog,
           onMeta: onAdapterMeta,
           onEvent: onAdapterEvent,
@@ -14953,7 +14958,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             } as Record<string, unknown>)
           : null;
 
-      const persistedResultJson = mergeHeartbeatRunResultJson(
+      let persistedResultJson = mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
@@ -15002,6 +15007,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let persistedRun = persistedRunWrite.run;
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
+      }
+
+      // Paperclip-owned Jarvis learn outbox: only after durable run finalization.
+      if (persistedRun) {
+        try {
+          const adapterConfig =
+            agent.adapterConfig && typeof agent.adapterConfig === "object" && !Array.isArray(agent.adapterConfig)
+              ? (agent.adapterConfig as Record<string, unknown>)
+              : {};
+          const learnDelivery = await deliverPendingJarvisLearn({
+            resultJson: parseObject(persistedRun.resultJson),
+            adapterConfig,
+          });
+          if (learnDelivery.delivered || learnDelivery.error || learnDelivery.resultJson.jarvis_learn_outbox) {
+            const updated = await db
+              .update(heartbeatRuns)
+              .set({
+                resultJson: learnDelivery.resultJson,
+                updatedAt: new Date(),
+              })
+              .where(eq(heartbeatRuns.id, persistedRun.id))
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (updated) {
+              persistedRun = updated;
+              persistedResultJson = learnDelivery.resultJson;
+            }
+            if (learnDelivery.error) {
+              await onLog(
+                "stdout",
+                `[paperclip] Jarvis learn outbox delivery deferred/failed: ${learnDelivery.error}\n`,
+              );
+            } else if (learnDelivery.delivered) {
+              await onLog("stdout", "[paperclip] Jarvis learn outbox delivered after finalization\n");
+            }
+          }
+        } catch (err) {
+          logger.warn(
+            { err, runId: persistedRun.id },
+            "failed to drain Jarvis learn outbox after Paperclip finalization",
+          );
+          await onLog(
+            "stderr",
+            `[paperclip] Failed to drain Jarvis learn outbox: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
       }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
@@ -15455,6 +15506,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           }
           activeRunExecutions.delete(run.id);
+          activeRunAbortControllers.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
   }
@@ -17639,6 +17691,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
     const errorCode = options.errorCode ?? "cancelled";
+    activeRunAbortControllers.get(run.id)?.abort(new Error(reason));
     const resultJson = agent
       ? {
           ...mergeRunStopMetadataForAgent(agent, "cancelled", {
@@ -17707,6 +17760,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
+      activeRunAbortControllers.get(run.id)?.abort(new Error(reason));
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,

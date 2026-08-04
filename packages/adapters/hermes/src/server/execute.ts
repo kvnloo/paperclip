@@ -52,6 +52,13 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import {
+  enqueueJarvisLearnOutbox,
+  expandPaperclipTaskWithJarvis,
+  mapPaperclipOutcomeToJarvis,
+  resolveJarvisBridgeConfig,
+  type JarvisLearnOutboxItem,
+} from "./jarvis.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -409,9 +416,57 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
+  const ctxContext = (ctx as any).context || {};
+  const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+  const canonicalWorkspacePath = path.resolve(cwd);
   let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
   if (agentInstructions) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
+  }
+
+  // Jarvis is the identity/retrieval layer; Paperclip remains authoritative
+  // for assignment, status, budgets, approvals, and workspace scope. Bind the
+  // expansion and outcome to the Paperclip run ID so every training signal has
+  // deterministic work provenance.
+  const jarvisConfig = resolveJarvisBridgeConfig(config);
+  if (ctx.abortSignal?.aborted) {
+    throw new Error("Hermes execution cancelled before Jarvis expansion");
+  }
+  const wakeIssue =
+    typeof ctxContext.paperclipWake?.issue === "object" && ctxContext.paperclipWake.issue !== null
+      ? ctxContext.paperclipWake.issue as Record<string, unknown>
+      : {};
+  const paperclipTaskMarkdown = selectPaperclipTaskMarkdown(ctxContext, {
+    resumedSession: Boolean(prevSessionId),
+  });
+  const jarvisBridge = await expandPaperclipTaskWithJarvis({
+    prompt: paperclipTaskMarkdown || prompt,
+    workspacePath: canonicalWorkspacePath,
+    runId: ctx.runId || "",
+    agentId: ctx.agent?.id || "",
+    companyId: ctx.agent?.companyId || "",
+    issueId: cfgString(ctxContext.issueId) || cfgString(ctxContext.taskId) || "",
+    issueIdentifier: cfgString(wakeIssue.identifier),
+    projectId: cfgString(ctxContext.projectId) || cfgString(wakeIssue.projectId),
+    goalId: cfgString(ctxContext.goalId) || cfgString(wakeIssue.goalId),
+    productId: cfgString(ctxContext.productId) || cfgString(ctx.config?.productId),
+  }, jarvisConfig, fetch, ctx.abortSignal);
+  if (jarvisBridge.warning) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Warning: Jarvis identity expansion unavailable: ${jarvisBridge.warning}\n`,
+    );
+  }
+  if (jarvisBridge.contextMarkdown) {
+    prompt = jarvisBridge.contextMarkdown + "\n\n---\n\n" + prompt;
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Jarvis identity context bound to run ${jarvisBridge.traceId}` +
+        `${jarvisBridge.modelId ? ` (model=${jarvisBridge.modelId})` : ""}\n`,
+    );
+  }
+  if (ctx.abortSignal?.aborted) {
+    throw new Error("Hermes execution cancelled after Jarvis expansion");
   }
 
   // ── Build command args ─────────────────────────────────────────────────
@@ -476,8 +531,11 @@ export async function execute(
   delete env.PAPERCLIP_API_KEY;
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
 
+  // The Jarvis bearer token authenticates the host-side bridge only. Never
+  // expose it to the Hermes process or tools through inherited/user env.
+  delete env.JARVIS_GATEWAY_TOKEN;
+
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
-  const ctxContext = (ctx as any).context || {};
   const envTaskId = cfgString(ctxContext.taskId) || cfgString(ctxContext.issueId) || cfgString(ctx.config?.taskId);
   if (envTaskId) env.PAPERCLIP_TASK_ID = envTaskId;
   const envWakeReason = cfgString(ctxContext.wakeReason) || cfgString(ctx.config?.wakeReason);
@@ -488,81 +546,125 @@ export async function execute(
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
 
   // ── Resolve working directory ──────────────────────────────────────────
-  const cwd =
-    cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {
     // Non-fatal
   }
 
-  // ── Log start ──────────────────────────────────────────────────────────
-  await ctx.onLog(
-    "stdout",
-    `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
-  );
-  if (prevSessionId) {
+  let result: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    // ── Log start ────────────────────────────────────────────────────────
     await ctx.onLog(
       "stdout",
-      `[hermes] Resuming session: ${prevSessionId}\n`,
+      `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
     );
-  }
+    if (prevSessionId) {
+      await ctx.onLog(
+        "stdout",
+        `[hermes] Resuming session: ${prevSessionId}\n`,
+      );
+    }
 
-  // ── Execute ────────────────────────────────────────────────────────────
-  // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
-  // Paperclip renders all stderr as red/error in the UI.
-  // Wrap onLog to reclassify benign stderr lines as stdout.
-  const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
-    if (stream === "stderr") {
-      const trimmed = chunk.trimEnd();
-      // Benign patterns that should NOT appear as errors:
-      // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...
-      // - MCP server registration messages
-      // - Python import/site noise
-      const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) || // structured timestamps
-        /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) || // log levels
-        /Successfully registered all tools/.test(trimmed) ||
-        /MCP [Ss]erver/.test(trimmed) ||
-        /tool registered successfully/.test(trimmed) ||
-        /Application initialized/.test(trimmed);
-      if (isBenign) {
-        return ctx.onLog("stdout", chunk);
+    // ── Execute ──────────────────────────────────────────────────────────
+    // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
+    // Paperclip renders all stderr as red/error in the UI.
+    // Wrap onLog to reclassify benign stderr lines as stdout.
+    const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+      if (stream === "stderr") {
+        const trimmed = chunk.trimEnd();
+        const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) ||
+          /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) ||
+          /Successfully registered all tools/.test(trimmed) ||
+          /MCP [Ss]erver/.test(trimmed) ||
+          /tool registered successfully/.test(trimmed) ||
+          /Application initialized/.test(trimmed);
+        if (isBenign) return ctx.onLog("stdout", chunk);
+      }
+      return ctx.onLog(stream, chunk);
+    };
+
+    result = await runChildProcess(ctx.runId, hermesCmd, args, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn: ctx.onSpawn,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    let jarvisLearnOutbox: JarvisLearnOutboxItem | null = null;
+    let jarvisOutcomeError: string | null = null;
+    if (jarvisBridge.traceId) {
+      try {
+        // Paperclip owns post-finalization learn delivery. Adapter only enqueues.
+        jarvisLearnOutbox = enqueueJarvisLearnOutbox({
+          runId: ctx.runId || "",
+          agentId: ctx.agent?.id || "",
+          companyId: ctx.agent?.companyId || "",
+          issueId: cfgString(ctxContext.issueId) || cfgString(ctxContext.taskId) || "",
+          issueIdentifier: cfgString(wakeIssue.identifier),
+          projectId: cfgString(ctxContext.projectId) || cfgString(wakeIssue.projectId),
+          productId: jarvisBridge.productId
+            ?? cfgString(ctxContext.productId)
+            ?? cfgString(ctx.config?.productId),
+          outcome: mapPaperclipOutcomeToJarvis({
+            timedOut: false,
+            cancelled: Boolean(ctx.abortSignal?.aborted),
+            success: false,
+          }),
+          summary: message,
+        });
+      } catch (recordError) {
+        jarvisOutcomeError = recordError instanceof Error ? recordError.message : String(recordError);
       }
     }
-    return ctx.onLog(stream, chunk);
-  };
-
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+    return {
+      exitCode: 1,
+      signal: ctx.abortSignal?.aborted ? "SIGTERM" : null,
+      timedOut: false,
+      errorMessage: message,
+      errorCode: ctx.abortSignal?.aborted ? "hermes_cancelled" : "hermes_execution_failed",
+      provider: resolvedProvider,
+      model,
+      resultJson: {
+        jarvis_trace_id: jarvisBridge.traceId ?? null,
+        jarvis_model_id: jarvisBridge.modelId ?? null,
+        jarvis_outcome_recorded: false,
+        jarvis_outcome_error: jarvisOutcomeError,
+        jarvis_learn_outbox: jarvisLearnOutbox,
+      },
+    };
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
 
-  await ctx.onLog(
-    "stdout",
-    `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`,
-  );
-  if (parsed.sessionId) {
-    await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
+  let terminalLogError: string | null = null;
+  try {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`,
+    );
+    if (parsed.sessionId) {
+      await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
+    }
+  } catch (error) {
+    terminalLogError = error instanceof Error ? error.message : String(error);
   }
 
   // ── Build result ───────────────────────────────────────────────────────
   const executionResult: AdapterExecutionResult = {
-    exitCode: result.exitCode,
+    exitCode: terminalLogError ? 1 : result.exitCode,
     signal: result.signal,
     timedOut: result.timedOut,
     provider: resolvedProvider,
     model,
   };
 
-  if (parsed.errorMessage) {
-    executionResult.errorMessage = parsed.errorMessage;
+  if (parsed.errorMessage || terminalLogError) {
+    executionResult.errorMessage = parsed.errorMessage ?? terminalLogError;
   }
 
   if (parsed.usage) {
@@ -578,12 +680,56 @@ export async function execute(
     executionResult.summary = parsed.response.slice(0, 2000);
   }
 
+  // Learn is Paperclip-owned post-finalization. Adapter only enqueues a redacted
+  // contract envelope into resultJson for the heartbeat outbox drain.
+  let jarvisLearnOutbox: JarvisLearnOutboxItem | null = null;
+  let jarvisOutcomeError: string | null = null;
+  if (jarvisBridge.traceId) {
+    try {
+      const issueId = cfgString(ctxContext.issueId) || cfgString(ctxContext.taskId) || "";
+      const runId = ctx.runId || "";
+      jarvisLearnOutbox = enqueueJarvisLearnOutbox({
+        runId,
+        agentId: ctx.agent?.id || "",
+        companyId: ctx.agent?.companyId || "",
+        issueId,
+        issueIdentifier: cfgString(wakeIssue.identifier),
+        projectId: cfgString(ctxContext.projectId) || cfgString(wakeIssue.projectId),
+        productId: jarvisBridge.productId
+          ?? cfgString(ctxContext.productId)
+          ?? cfgString(ctx.config?.productId),
+        outcome: mapPaperclipOutcomeToJarvis({
+          timedOut: Boolean(result.timedOut),
+          cancelled: result.signal === "SIGTERM" || Boolean(ctx.abortSignal?.aborted),
+          success: result.exitCode === 0 && !result.timedOut && !parsed.errorMessage && !terminalLogError,
+        }),
+        // Bounded redacted summary — never forward raw harness transcripts.
+        summary: executionResult.summary
+          ?? (parsed.errorMessage ? parsed.errorMessage.slice(0, 500) : `Hermes run completed with exit ${result.exitCode}`),
+        evidenceRefs: issueId && runId
+          ? [`paperclip://issues/${issueId}/runs/${runId}`]
+          : [],
+      });
+    } catch (error) {
+      jarvisOutcomeError = error instanceof Error ? error.message : String(error);
+      await ctx.onLog(
+        "stdout",
+        `[hermes] Warning: Jarvis learn outbox enqueue failed: ${jarvisOutcomeError}\n`,
+      );
+    }
+  }
+
   // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)
   executionResult.resultJson = {
     result: parsed.response || "",
     session_id: parsed.sessionId || null,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
+    jarvis_trace_id: jarvisBridge.traceId ?? null,
+    jarvis_model_id: jarvisBridge.modelId ?? null,
+    jarvis_outcome_recorded: false,
+    jarvis_outcome_error: jarvisOutcomeError,
+    jarvis_learn_outbox: jarvisLearnOutbox,
   };
 
   // Store session ID for next run

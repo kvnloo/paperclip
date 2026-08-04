@@ -188,6 +188,8 @@ export interface AdapterExecutionContext {
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  /** Aborted by the control plane when the heartbeat run is cancelled. */
+  abortSignal?: AbortSignal;
   authToken?: string;
   /**
    * The injected OpenTelemetry startup trace context (tracer + root
