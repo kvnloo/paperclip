@@ -36,6 +36,8 @@ export const VALID_PROVIDERS = [
   "openrouter",
   "nous",
   "openai-codex",
+  "xai-oauth",
+  "xai",
   "copilot",
   "copilot-acp",
   "anthropic",
@@ -64,6 +66,7 @@ export const MODEL_PREFIX_PROVIDER_HINTS: [string, string][] = [
   ["o4-", "openai-codex"],
   // Anthropic models
   ["claude", "anthropic"],
+  ["grok", "xai-oauth"],
   // Google models (via openrouter or direct)
   ["gemini", "auto"],
   // Nous models
